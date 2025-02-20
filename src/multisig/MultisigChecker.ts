@@ -1,7 +1,7 @@
 import {
     AddressInfo,
     addressToString,
-    assert,
+    assert, base64toHex,
     equalsAddressLists,
     formatAddressAndUrl,
     getAddressFormat
@@ -108,7 +108,7 @@ export const checkMultisig = async (
     multisigOrderCode: Cell,
     isTestnet: boolean,
     lastOrdersMode: 'none' | 'history' | 'aggregate',
-    needAdditionalChecks: boolean,
+    needAdditionalGetMethodChecks: boolean,
 ): Promise<MultisigInfo> => {
 
     // Account State and Data
@@ -149,7 +149,7 @@ export const checkMultisig = async (
 
     const provider = new MyNetworkProvider(multisigAddress.address, isTestnet);
 
-    if (needAdditionalChecks) {
+    if (needAdditionalGetMethodChecks) {
         const getData = await multisigContract.getMultisigData(provider);
 
         if (parsedData.allowArbitraryOrderSeqno) {
@@ -335,7 +335,7 @@ export const checkMultisig = async (
             const findFailTx = (tonApiResult: any): boolean => {
                 if (tonApiResult.transaction) {
                     if (tonApiResult.transaction.success === false) {
-                        if (tonApiResult.transaction.in_msg.decoded_op_name !== "excess") {
+                        if (tonApiResult.transaction.in_msg.decoded_op_name !== "excess" && !tonApiResult.transaction.in_msg.bounced) {
                             return true;
                         }
                     }
@@ -348,10 +348,11 @@ export const checkMultisig = async (
                 return false;
             }
 
-            for (const lastOrder of lastOrders) {
+            const getFailedOrderPromises = [];
+
+            const getFailedOrder = async (lastOrder: LastOrder) => {
                 if (lastOrder.type === 'executed') {
-                    const transactionHashHex = Buffer.from(lastOrder.transactionHash, 'base64').toString('hex');
-                    const result = await sendToTonApi('traces/' + transactionHashHex, {}, isTestnet);
+                    const result = await sendToTonApi('traces/' + base64toHex(lastOrder.transactionHash), {}, isTestnet);
                     if (findFailTx(result)) {
                         lastOrder.errorMessage = 'Failed';
                     }
@@ -359,6 +360,10 @@ export const checkMultisig = async (
             }
 
             for (const lastOrder of lastOrders) {
+              getFailedOrderPromises.push(getFailedOrder(lastOrder));
+            }
+
+            const getOrderInfo = async (lastOrder: LastOrder) => {
                 if (lastOrder.type === 'pending') {
                     try {
                         const orderInfo = await checkMultisigOrder(lastOrder.order.address, multisigOrderCode, multisigInfo, isTestnet, false);
@@ -366,6 +371,9 @@ export const checkMultisig = async (
                         const isExpired = (new Date()).getTime() > orderInfo.expiresAt.getTime();
                         if (isExpired) {
                             lastOrder.type = 'executed';
+                        } else if (orderInfo.isMismatchSigners || orderInfo.isMismatchThreshold) {
+                            lastOrder.type = 'executed';
+                            lastOrder.errorMessage = 'Multisig signers or threshold do not match order';
                         }
                     } catch (e) {
                         lastOrder.type = 'executed';
@@ -373,6 +381,14 @@ export const checkMultisig = async (
                     }
                 }
             }
+
+            const getOrderInfoPromises = [];
+
+            for (const lastOrder of lastOrders) {
+                getOrderInfoPromises.push(getOrderInfo(lastOrder));
+            }
+
+            await Promise.all(getOrderInfoPromises.concat(getFailedOrderPromises));
 
             lastOrders = lastOrders.sort((a, b) => {
                 if (a.type === b.type) {

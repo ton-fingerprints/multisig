@@ -26,6 +26,8 @@ export interface MultisigOrderInfo {
     expiresAt: Date;
     actions: string[];
     stateInitMatches: boolean;
+    isMismatchSigners: boolean;
+    isMismatchThreshold: boolean;
 }
 
 const checkNumber = (n: number) => {
@@ -40,7 +42,7 @@ export const checkMultisigOrder = async (
     multisigOrderCode: Cell,
     multisigInfo: MultisigInfo,
     isTestnet: boolean,
-    needAdditionalChecks: boolean,
+    needAdditionalGetMethodChecks: boolean,
 ): Promise<MultisigOrderInfo> => {
 
     // Account State and Data
@@ -80,12 +82,15 @@ export const checkMultisigOrder = async (
 
     assert(multisigOrderToCheck.address.equals(multisigOrderAddress.address), "Fake multisig-order");
 
+    let isMismatchSigners = false;
+    let isMismatchThreshold = false;
+
     if (!parsedData.isExecuted) {
-        assert(multisigInfo.threshold <= parsedData.threshold, "Multisig threshold do not match order threshold");
-        assert(equalsAddressLists(multisigInfo.signers.map(a => a.address), parsedData.signers), "Multisig signers do not match order signers");
+        isMismatchThreshold = multisigInfo.threshold > parsedData.threshold;
+        isMismatchSigners = !equalsAddressLists(multisigInfo.signers.map(a => a.address), parsedData.signers);
     }
 
-    if (needAdditionalChecks) {
+    if (needAdditionalGetMethodChecks) {
         // Get-methods
 
         const provider = new MyNetworkProvider(multisigOrderAddress.address, isTestnet);
@@ -177,9 +182,20 @@ export const checkMultisigOrder = async (
             const slice = cell.beginParse();
             const parsed = JettonMinter.parseTransfer(slice);
             if (parsed.customPayload) throw new Error('Transfer custom payload not supported');
-            assert(parsed.forwardPayload.remainingBits === 0 && parsed.forwardPayload.remainingRefs === 0, 'Transfer forward payload not supported');
+
+            let comment = '';
+            if (parsed.forwardPayload.remainingBits === 0 && parsed.forwardPayload.remainingRefs === 0) {
+                comment = 'without comment'
+            } else if (parsed.forwardPayload.remainingBits >= 32) {
+                const op = parsed.forwardPayload.loadUint(32);
+                assert(op === 0, 'Transfer arbitrary forward payload not supported');
+                comment = 'with comment "' + parsed.forwardPayload.loadStringTail() + '"';
+            } else {
+                assert(false, 'Transfer arbitrary forward payload not supported');
+            }
+
             const toAddress = await formatAddressAndUrl(parsed.toAddress, isTestnet)
-            return `Transfer ${parsed.jettonAmount} jettons (in units) from multisig to user ${toAddress};`;
+            return `Transfer ${parsed.jettonAmount} jettons (in units) from multisig to user ${toAddress} ${comment};`;
         } catch (e) {
         }
 
@@ -313,7 +329,9 @@ export const checkMultisigOrder = async (
         signers: signersFormatted,
         expiresAt: new Date(parsedData.expirationDate * 1000),
         actions: parsedActions,
-        stateInitMatches
+        stateInitMatches,
+        isMismatchSigners,
+        isMismatchThreshold
     }
 
 }

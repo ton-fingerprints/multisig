@@ -7,7 +7,7 @@
 
     <title>TON Multisig</title>
 
-    <link rel="stylesheet" href="css/main.css?4">
+    <link rel="stylesheet" href="css/main.css?5">
 </head>
 <body>
 
@@ -19,9 +19,7 @@
 
 <div id="header">
     <!-- Badge -->
-    <a href="https://ton.org">
-        <div id="header_logo"></div>
-    </a>
+    <div id="header_logo"></div>
     <div id="header_title">Multisig</div>
 
     <div id="header_grow"></div>
@@ -161,10 +159,12 @@
 
                 <div class="label">Approvals:</div>
                 <div id="order_approvals" class="value"></div>
+                <div id="order_thresholdError" class="error"></div>
 
                 <div class="label">Signers:</div>
                 <div id="order_signersList">
                 </div>
+                <div id="order_signersError" class="error"></div>
 
                 <div class="label">Expires At:</div>
                 <div id="order_expiresAt" class="value"></div>
