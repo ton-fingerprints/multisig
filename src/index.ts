@@ -2,7 +2,9 @@ import {Address, beginCell, Cell, fromNano, SendMode, toNano} from "@ton/core";
 import {THEME, TonConnectUI} from '@tonconnect/ui'
 import {
     AddressInfo,
-    addressToString, base64toHex, equalsAddressLists,
+    addressToString,
+    base64toHex,
+    equalsAddressLists,
     equalsMsgAddresses,
     makeAddressLink,
     validateUserFriendlyAddress
@@ -17,6 +19,10 @@ import {storeStateInit} from "@ton/core/src/types/StateInit";
 import {MyNetworkProvider, sendToIndex} from "./utils/MyNetworkProvider";
 import {Order} from "./multisig/Order";
 import {JettonWallet} from "./jetton/JettonWallet";
+import {
+    SINGLE_NOMINATOR_POOL_OP_CHANGE_VALIDATOR_ADDRESS,
+    SINGLE_NOMINATOR_POOL_OP_WITHDRAW
+} from "./multisig/Constants";
 
 // UI COMMON
 
@@ -600,7 +606,7 @@ $('#order_approveButton').addEventListener('click', async () => {
 
 // NEW ORDER
 
-type FieldType = 'TON' | 'Jetton' | 'Address' | 'URL' | 'Status' | 'String';
+type FieldType = 'TON' | 'Jetton' | 'Address' | 'URL' | 'Status' | 'String' | 'BOC';
 
 interface ValidatedValue {
     value?: any;
@@ -682,6 +688,13 @@ const validateValue = (fieldName: string, value: string, fieldType: FieldType): 
                 return makeValue(value);
             } else {
                 return makeError('Invalid status. Please use: ' + LOCK_TYPES.join(', '));
+            }
+
+        case 'BOC':
+            try {
+                return makeValue(Cell.fromBase64(value));
+            } catch (error) {
+                return makeError('Invalid BOC');
             }
     }
 }
@@ -1013,6 +1026,93 @@ const orderTypes: OrderType[] = [
                 tonAmount: DEFAULT_AMOUNT,
                 body: JettonMinter.lockWalletMessage(values.userAddress.address, lockTypeToInt(values.newStatus), DEFAULT_INTERNAL_AMOUNT)
             }
+        }
+    },
+    {
+        name: 'Single nominator pool: Withdraw',
+        fields: {
+            amount: {
+                name: 'TON Amount for gas',
+                type: 'TON'
+            },
+            toAddress: {
+                name: 'Pool Address',
+                type: 'Address'
+            },
+            withdrawAmount: {
+                name: 'Withdraw TON amount',
+                type: 'TON'
+            },
+        },
+        makeMessage: async (values) => {
+            const body = beginCell()
+                .storeUint(SINGLE_NOMINATOR_POOL_OP_WITHDRAW, 32)
+                .storeUint(0, 64) // query id
+                .storeCoins(values.withdrawAmount)
+                .endCell();
+
+            return {
+                toAddress: values.toAddress,
+                tonAmount: values.amount,
+                body: body
+            };
+        }
+    },
+
+    {
+        name: 'Single nominator pool: Change Validator Address',
+        fields: {
+            amount: {
+                name: 'TON Amount for gas',
+                type: 'TON'
+            },
+            toAddress: {
+                name: 'Pool Address',
+                type: 'Address'
+            },
+            validatorAddress: {
+                name: 'New Validator Address',
+                type: 'Address'
+            }
+        },
+        makeMessage: async (values) => {
+            const validatorAddress: Address = values.validatorAddress.address;
+
+            const body = beginCell()
+                .storeUint(SINGLE_NOMINATOR_POOL_OP_CHANGE_VALIDATOR_ADDRESS, 32)
+                .storeUint(0, 64) // query id
+                .storeAddress(validatorAddress)
+                .endCell();
+
+            return {
+                toAddress: values.toAddress,
+                tonAmount: values.amount,
+                body: body
+            };
+        }
+    },
+    {
+        name: 'Arbitrary order',
+        fields: {
+            order: {
+                name: 'Order BOC (body cell in Base64)',
+                type: 'BOC'
+            },
+            amount: {
+                name: 'TON Amount',
+                type: 'TON'
+            },
+            toAddress: {
+                name: 'Destination Address',
+                type: 'Address'
+            }
+        },
+        makeMessage: async (values): Promise<MakeMessageResult> => {
+            return {
+                toAddress: values.toAddress,
+                tonAmount: values.amount,
+                body: values.order
+            };
         }
     },
 ]

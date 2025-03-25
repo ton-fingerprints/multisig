@@ -13,6 +13,7 @@ import {MultisigInfo} from "./MultisigChecker";
 import {MyNetworkProvider, sendToIndex} from "../utils/MyNetworkProvider";
 import {intToLockType, JettonMinter, lockTypeToDescription} from "../jetton/JettonMinter";
 import {CommonMessageInfoRelaxedInternal} from "@ton/core/src/types/CommonMessageInfoRelaxed";
+import {SINGLE_NOMINATOR_POOL_OP_CHANGE_VALIDATOR_ADDRESS, SINGLE_NOMINATOR_POOL_OP_WITHDRAW} from "./Constants";
 
 export interface MultisigOrderInfo {
     address: AddressInfo;
@@ -229,7 +230,34 @@ export const checkMultisigOrder = async (
         } catch (e) {
         }
 
-        throw new Error('Unsupported action')
+        try {
+            const slice = cell.beginParse();
+            const op = slice.loadUint(32);
+            // https://github.com/ton-blockchain/mytonctrl/blob/master/mytoncore/contracts/single-nominator-pool/single-nominator-code.fc#L98
+            if (op === SINGLE_NOMINATOR_POOL_OP_WITHDRAW) {
+                const queryId = slice.loadUint(64);
+                const coins = slice.loadCoins();
+                return `Withdraw ${fromNano(coins)} TON from single-nominator pool.`;
+            }
+        } catch (e) {
+        }
+
+        try {
+            const slice = cell.beginParse();
+            const op = slice.loadUint(32);
+            // https://github.com/ton-blockchain/mytonctrl/blob/master/mytoncore/contracts/single-nominator-pool/single-nominator-code.fc#L106
+            if (op === SINGLE_NOMINATOR_POOL_OP_CHANGE_VALIDATOR_ADDRESS) {
+                const queryId = slice.loadUint(64);
+                const validatorAddress = slice.loadAddress();
+                const validatorAddressUrl = await formatAddressAndUrl(validatorAddress, isTestnet)
+
+                return `Change validator to ${validatorAddressUrl} in single-nominator pool.`;
+            }
+        } catch (e) {
+        }
+
+
+        return `<b><span class="error">ATTENTION - Unknown action! This order contains arbitrary actions! Dangerous! Don't sign unless you know exactly what you're doing!</span></b><br>Raw message body data: "${cell.toBoc().toString('base64')}".`;
 
     }
 
@@ -262,7 +290,7 @@ export const checkMultisigOrder = async (
                 sendModeString.push('Carry all the remaining value of the inbound message');
             }
             if (sendMode & 32) {
-                sendModeString.push('DESTROY ACCOUNT');
+                throw new Error('The order is invalid because its send mode (+32) will delete the multisig');
             }
 
 
@@ -272,6 +300,14 @@ export const checkMultisigOrder = async (
             console.log(messageRelaxed);
 
             const info: CommonMessageInfoRelaxedInternal = messageRelaxed.info as any;
+
+            if (info.ihrFee !== 0n) {
+                throw new Error('The order is invalid: IHR fee greater than 0');
+            }
+
+            if (info.forwardFee !== 0n) {
+                throw new Error('The order is invalid: Forward fee greater than 0');
+            }
 
             const destAddress = await formatAddressAndUrl(info.dest, isTestnet);
             actionString += `<div>Send ${allBalance ? 'ALL BALANCE' : fromNano(info.value.coins)} TON to ${destAddress}</div>`
