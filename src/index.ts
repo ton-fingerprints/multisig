@@ -1,4 +1,4 @@
-import {Address, beginCell, Cell, fromNano, SendMode, toNano} from "@ton/core";
+import {Address, beginCell, Cell, fromNano, SendMode, storeMessageRelaxed, toNano} from "@ton/core";
 import {THEME, TonConnectUI} from '@tonconnect/ui'
 import {
     AddressInfo,
@@ -21,7 +21,8 @@ import {Order} from "./multisig/Order";
 import {JettonWallet} from "./jetton/JettonWallet";
 import {
     SINGLE_NOMINATOR_POOL_OP_CHANGE_VALIDATOR_ADDRESS,
-    SINGLE_NOMINATOR_POOL_OP_WITHDRAW
+    SINGLE_NOMINATOR_POOL_OP_WITHDRAW,
+    VESTING_INTERNAL_TRANSFER
 } from "./multisig/Constants";
 
 // UI COMMON
@@ -262,7 +263,7 @@ const renderCurrentMultisigInfo = (): void => {
         if (lastOrder.errorMessage) {
             if (lastOrder.errorMessage.startsWith('Contract not active')) return ``;
             if (lastOrder.errorMessage.startsWith('Failed')) {
-                return `<div class="multisig_lastOrder" order-id="${lastOrder.order.id}" order-address="${addressToString(lastOrder.order.address)}"><span class="orderListItem_title">Failed Order #${lastOrder.order.id}</span> — Execution error — <a href="https://tonviewer.com/transaction/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a></div>`;
+                return `<div class="multisig_lastOrder" order-id="${lastOrder.order.id}" order-address="${addressToString(lastOrder.order.address)}"><span class="orderListItem_title">Failed Order #${lastOrder.order.id}</span> — Execution error — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a></div>`;
             }
             return `<div class="multisig_lastOrder" order-id="${lastOrder.order.id}" order-address="${addressToString(lastOrder.order.address)}"><span class="orderListItem_title">Invalid Order #${lastOrder.order.id}</span> — ${lastOrder.errorMessage}</div>`;
         } else {
@@ -285,7 +286,7 @@ const renderCurrentMultisigInfo = (): void => {
             }
 
             if (lastOrder.type === 'executed') {
-                text += ` — <a href="https://tonviewer.com/transaction/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
+                text += ` — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
             }
 
             return `<div class="multisig_lastOrder" order-id="${lastOrder.order.id}" order-address="${addressToString(lastOrder.order.address)}">${text}</div>`;
@@ -432,7 +433,7 @@ const renderCurrentOrderInfo = (): void => {
     if (isExecuted) {
         const lastOrder = currentMultisigInfo.lastOrders.find(lo => lo.order.id === currentOrderInfo.orderId);
         if (lastOrder) {
-            executedTxLink += ` — <a href="https://tonviewer.com/transaction/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
+            executedTxLink += ` — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
         }
     }
 
@@ -1087,6 +1088,65 @@ const orderTypes: OrderType[] = [
             return {
                 toAddress: values.toAddress,
                 tonAmount: values.amount,
+                body: body
+            };
+        }
+    },
+
+    {
+        name: 'Vesting: Send From Vesting (0.1 TON for gas)',
+        fields: {
+            vestingAddress: {
+                name: 'Vesting Address',
+                type: 'Address'
+            },
+            destinationAddress: {
+                name: 'Destination Address',
+                type: 'Address'
+            },
+            amount: {
+                name: 'TON Amount',
+                type: 'TON'
+            },
+            comment: { // todo: Add support for base64/hex/boc payload
+                name: 'Optional comment',
+                type: 'String'
+            }
+        },
+        makeMessage: async (values) => {
+            const destinationAddress: Address = values.destinationAddress.address;
+
+            const body = beginCell()
+                .storeUint(VESTING_INTERNAL_TRANSFER, 32)
+                .storeUint(0, 64) // query_id
+                .storeUint(3, 8) // send_mode
+                .storeRef(
+                    beginCell()
+                        .store(
+                            storeMessageRelaxed({
+                                info: {
+                                    type: 'internal',
+                                    ihrDisabled: true,
+                                    bounce: true, // we can send only bounceable messages from non-expired vesting
+                                    bounced: false,
+                                    dest: destinationAddress,
+                                    value: {
+                                        coins: values.amount
+                                    },
+                                    ihrFee: 0n,
+                                    forwardFee: 0n,
+                                    createdLt: 0n,
+                                    createdAt: 0
+                                },
+                                body: values.comment ? beginCell().storeUint(0, 32).storeStringTail(values.comment).endCell() : beginCell().endCell()
+                            })
+                        ).endCell()
+                )
+                .endCell();
+
+            return {
+                toAddress: values.vestingAddress,
+                tonAmount: toNano('0.1'), // 0.1 TON for gas
                 body: body
             };
         }
