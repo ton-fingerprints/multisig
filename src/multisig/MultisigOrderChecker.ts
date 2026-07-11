@@ -193,7 +193,7 @@ export const checkMultisigOrder = async (
             } else if (parsed.forwardPayload.remainingBits >= 32) {
                 const op = parsed.forwardPayload.loadUint(32);
                 assert(op === 0, 'Transfer arbitrary forward payload not supported');
-                comment = 'with comment "' + parsed.forwardPayload.loadStringTail() + '"';
+                comment = 'with comment "' + sanitizeHTML(parsed.forwardPayload.loadStringTail()) + '"';
             } else {
                 assert(false, 'Transfer arbitrary forward payload not supported');
             }
@@ -281,7 +281,7 @@ export const checkMultisigOrder = async (
                 if (messageBody.remainingBits === 0 && messageBody.remainingRefs === 0) {
                     // no payload
                 } else if (messageBody.remainingBits > 32 && messageBody.loadUint(32) == 0) {
-                    actionString += ' with text "' + messageBody.loadStringTail() + '".';
+                    actionString += ' with text "' + sanitizeHTML(messageBody.loadStringTail()) + '".';
                 } else {
                     actionString += ` with data: "${messageBodyBoc.toString('base64')}". `
                 }
