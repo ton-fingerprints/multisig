@@ -286,7 +286,11 @@ const renderCurrentMultisigInfo = (): void => {
             }
 
             if (lastOrder.type === 'executed') {
-                text += ` — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
+                if (lastOrder.executionStatus === 'checking') {
+                    text += ` — Checking transaction status… — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
+                } else {
+                    text += ` — <a href="https://tonscan.org/tx/${base64toHex(lastOrder.transactionHash)}" target="_blank">Tx Link</a>`;
+                }
             }
 
             return `<div class="multisig_lastOrder" order-id="${lastOrder.order.id}" order-address="${addressToString(lastOrder.order.address)}">${text}</div>`;

@@ -1,17 +1,106 @@
 import {
     AddressInfo,
     addressToString,
-    assert, base64toHex,
+    assert,
     equalsAddressLists,
-    formatAddressAndUrl,
     getAddressFormat
 } from "../utils/utils";
 import {Address, Cell, Dictionary} from "@ton/core";
 import {endParse, Multisig, parseMultisigData} from "./Multisig";
-import {MyNetworkProvider, sendToIndex, sendToTonApi} from "../utils/MyNetworkProvider";
+import {MyNetworkProvider, sendToIndex} from "../utils/MyNetworkProvider";
 import {Op} from "./Constants";
 import {Order} from "./Order";
 import {checkMultisigOrder, MultisigOrderInfo} from "./MultisigOrderChecker";
+
+const TRACE_BATCH_SIZE = 50;
+
+interface ToncenterMessage {
+    decoded_opcode?: string | null;
+    opcode?: string | number | null;
+    bounced?: boolean | null;
+}
+
+interface ToncenterSkippedComputePhase {
+    skipped: true;
+    reason: string;
+}
+
+interface ToncenterVmComputePhase {
+    skipped: false;
+    success: boolean;
+    exit_code: number;
+}
+
+type ToncenterComputePhase = ToncenterSkippedComputePhase | ToncenterVmComputePhase;
+
+interface ToncenterActionPhase {
+    success: boolean;
+}
+
+interface ToncenterTransactionDescription {
+    type: string;
+    bounce?: unknown | null;
+    compute_ph?: ToncenterComputePhase | null;
+    action?: ToncenterActionPhase | null;
+}
+
+interface ToncenterTransaction {
+    description?: ToncenterTransactionDescription | null;
+    in_msg?: ToncenterMessage | null;
+}
+
+interface ToncenterTrace {
+    is_incomplete?: boolean;
+    transactions?: Record<string, ToncenterTransaction> | null;
+}
+
+interface ToncenterTracesResponse {
+    traces?: ToncenterTrace[] | null;
+}
+
+const isSuccessfulToncenterTransaction = (transaction: ToncenterTransaction): boolean => {
+    const description = transaction.description;
+
+    switch (description?.type) {
+        case 'ord': {
+            if (description.bounce != null) return false;
+
+            const computePhase = description.compute_ph;
+            if (computePhase?.skipped === true && computePhase.reason !== 'no_state') return false;
+            if (computePhase?.skipped === false &&
+                (!computePhase.success || (computePhase.exit_code !== 0 && computePhase.exit_code !== 1))) {
+                return false;
+            }
+            if (description.action && !description.action.success) return false;
+            return true;
+        }
+        case 'tick_tock': {
+            const computePhase = description.compute_ph;
+            if (computePhase?.skipped === true && computePhase.reason !== 'no_state') return false;
+            if (computePhase?.skipped === false &&
+                (!computePhase.success || (computePhase.exit_code !== 0 && computePhase.exit_code !== 1))) {
+                return false;
+            }
+            if (description.action && !description.action.success) return false;
+            return true;
+        }
+        default:
+            return true;
+    }
+}
+
+const isExcessMessage = (message?: ToncenterMessage | null): boolean => {
+    return message?.decoded_opcode === 'excess' ||
+        message?.opcode === '0xd53276db' ||
+        message?.opcode === 0xd53276db;
+}
+
+const isFailedToncenterTransaction = (transaction: ToncenterTransaction): boolean => {
+    if (isSuccessfulToncenterTransaction(transaction)) return false;
+
+    const inMsg = transaction.in_msg;
+    return !isExcessMessage(inMsg) && !inMsg?.bounced;
+}
 
 const parseNewOrderInitStateBody = (cell: Cell) => {
     const slice = cell.beginParse();
@@ -80,6 +169,7 @@ export interface LastOrder {
     utime: number,
     transactionHash: string;
     type: 'new' | 'execute' | 'pending' | 'executed';
+    executionStatus?: 'checking' | 'success' | 'failed';
     errorMessage?: string;
     order?: {
         address: AddressInfo;
@@ -332,35 +422,33 @@ export const checkMultisig = async (
             lastOrders = Object.values(lastOrdersMap);
 
 
-            const findFailTx = (tonApiResult: any): boolean => {
-                if (tonApiResult.transaction) {
-                    if (tonApiResult.transaction.success === false) {
-                        if (tonApiResult.transaction.in_msg.decoded_op_name !== "excess" && !tonApiResult.transaction.in_msg.bounced) {
-                            return true;
+            const executedOrders = lastOrders.filter(lastOrder => lastOrder.type === 'executed');
+            const transactionHashes = [...new Set(executedOrders.map(lastOrder => lastOrder.transactionHash))];
+            const resolvedHashes = new Set<string>();
+            const failedHashes = new Set<string>();
+
+            const getTraceBatch = async (batch: string[]): Promise<void> => {
+                const result: ToncenterTracesResponse = await sendToIndex('traces', {tx_hash: batch, limit: batch.length}, isTestnet);
+
+                for (const trace of result.traces || []) {
+                    if (trace.is_incomplete) continue;
+
+                    const transactions = trace.transactions || {};
+                    const failed = Object.values(transactions).some(isFailedToncenterTransaction);
+
+                    for (const transactionHash of batch) {
+                        if (transactions[transactionHash]) {
+                            resolvedHashes.add(transactionHash);
+                            if (failed) failedHashes.add(transactionHash);
                         }
                     }
                 }
-                if (tonApiResult.children) {
-                    for (let child of tonApiResult.children) {
-                        if (findFailTx(child)) return true;
-                    }
-                }
-                return false;
             }
 
-            const getFailedOrderPromises = [];
-
-            const getFailedOrder = async (lastOrder: LastOrder) => {
-                if (lastOrder.type === 'executed') {
-                    const result = await sendToTonApi('traces/' + base64toHex(lastOrder.transactionHash), {}, isTestnet);
-                    if (findFailTx(result)) {
-                        lastOrder.errorMessage = 'Failed';
-                    }
-                }
-            }
-
-            for (const lastOrder of lastOrders) {
-              getFailedOrderPromises.push(getFailedOrder(lastOrder));
+            const getTraceBatchPromises: Promise<void>[] = [];
+            for (let offset = 0; offset < transactionHashes.length; offset += TRACE_BATCH_SIZE) {
+                const batch = transactionHashes.slice(offset, offset + TRACE_BATCH_SIZE);
+                getTraceBatchPromises.push(getTraceBatch(batch));
             }
 
             const getOrderInfo = async (lastOrder: LastOrder) => {
@@ -382,13 +470,30 @@ export const checkMultisig = async (
                 }
             }
 
-            const getOrderInfoPromises = [];
+            const getOrderInfoPromises: Promise<void>[] = [];
 
             for (const lastOrder of lastOrders) {
                 getOrderInfoPromises.push(getOrderInfo(lastOrder));
             }
 
-            await Promise.all(getOrderInfoPromises.concat(getFailedOrderPromises));
+            const traceBatchResults = await Promise.allSettled(getTraceBatchPromises);
+            for (const result of traceBatchResults) {
+                if (result.status === 'rejected') {
+                    console.error('Failed to load transaction trace batch', result.reason);
+                }
+            }
+            await Promise.all(getOrderInfoPromises);
+
+            for (const lastOrder of executedOrders) {
+                if (!resolvedHashes.has(lastOrder.transactionHash)) {
+                    lastOrder.executionStatus = 'checking';
+                } else if (failedHashes.has(lastOrder.transactionHash)) {
+                    lastOrder.executionStatus = 'failed';
+                    lastOrder.errorMessage = 'Failed';
+                } else {
+                    lastOrder.executionStatus = 'success';
+                }
+            }
 
             lastOrders = lastOrders.sort((a, b) => {
                 if (a.type === b.type) {

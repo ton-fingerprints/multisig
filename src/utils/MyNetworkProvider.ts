@@ -15,7 +15,10 @@ import {TonClient} from "@ton/ton";
 
 const API_KEY = 'd843619b379084d133f061606beecbf72ae2bf60e0622e808f2a3f631673599b';
 
-export const sendToIndex = async (method: string, params: any, isTestnet: boolean) => {
+type IndexQueryPrimitive = string | number | bigint | boolean;
+type IndexQueryValue = IndexQueryPrimitive | IndexQueryPrimitive[];
+
+export const sendToIndex = async (method: string, params: Record<string, IndexQueryValue>, isTestnet: boolean) => {
     const mainnetRpc = 'https://toncenter.com/api/v3/';
     const testnetRpc = 'https://testnet.toncenter.com/api/v3/';
     const rpc = isTestnet ? testnetRpc : mainnetRpc;
@@ -25,28 +28,18 @@ export const sendToIndex = async (method: string, params: any, isTestnet: boolea
         'X-API-Key': API_KEY
     };
 
-    const response = await fetch(rpc + method + '?' + new URLSearchParams(params), {
-        method: 'GET',
-        headers: headers,
-    });
-    const json = await response.json();
-    if (json.error) {
-        throw new Error(json.error);
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                query.append(key, String(item));
+            }
+        } else {
+            query.append(key, String(value));
+        }
     }
-    return json;
-}
 
-export const sendToTonApi = async (method: string, params: any, isTestnet: boolean) => {
-    const mainnetRpc = 'https://tonapi.io/v2/';
-    const testnetRpc = 'https://testnet.tonapi.io/v2/';
-    const rpc = isTestnet ? testnetRpc : mainnetRpc;
-
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer AHIQH4F4Y4XR6UIAAAAOGYUHWOWLUS6ZIPEXSCLAPOMMD6FSNMPUKHCIJHIP52YTU4VKURA'
-    };
-
-    const response = await fetch(rpc + method + '?' + new URLSearchParams(params), {
+    const response = await fetch(rpc + method + '?' + query, {
         method: 'GET',
         headers: headers,
     });
